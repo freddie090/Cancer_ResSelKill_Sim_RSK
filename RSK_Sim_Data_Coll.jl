@@ -41,16 +41,16 @@ end
 
 function extract_mut_freqs(cell_vec::Array{CancerCell})
 
-    # Extract all mutations
-    all_muts = vcat(map(x -> x.muts, cell_vec)...)
-
-    # Convert into a count dataframe
-    mut_df = DataFrame(mut_ID = all_muts)
-    mut_df = combine(groupby(mut_df, :mut_ID), nrow)
-    mut_df[! ,:mut_rf] = mut_df[!, :nrow]/length(cell_vec)
-
-    colnames = [:mut_ID, :mut_count, :mut_rf]
-    rename!(mut_df, colnames)
+    # Extract all mutations - rows = mutation ID, cols = freq.
+    all_muts = hcat(map(x -> x.muts, cell_vec)...)
+    # Convert into freq vector
+    mf_vec = sum(all_muts, dims = 2)
+    # Only keep the positive values - others are extinct mutations.
+    mf_vec = mf_vec[mf_vec .> 0]
+    # Convert into a freq dataframe
+    mut_df = DataFrame(mut_ID = collect(1:length(mf_vec)),
+                       mut_count = mf_vec,
+                       mut_rf = mf_vec/length(cell_vec))
 
     return mut_df
 

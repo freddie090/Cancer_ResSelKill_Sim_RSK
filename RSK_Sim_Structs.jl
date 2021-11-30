@@ -11,9 +11,8 @@
 # Cancer Cell - cell_ID, barcode, birth and death rates and resistance score.
 
 mutable struct CancerCell
-    cell_ID::Int64 # The 'clone' identity - all cells that share the same
-                   # mutations.
-    muts::Array{Float64} # Vector of cell's mutations.
+    muts::Array{Int64} # Vector of cell's mutations - position corresponds to
+                       # identity, and 0/1 to absence/presence.
     b::Float64 # birth rate.
     d::Float64 # death rate.
     R::Float64 # Resistant phenotype (binary).

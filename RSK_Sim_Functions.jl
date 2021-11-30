@@ -53,7 +53,6 @@
 
 function copycell(orig_cell::CancerCell)
     new_cell::CancerCell = CancerCell(
-    copy(orig_cell.cell_ID),
     copy(orig_cell.muts),
     copy(orig_cell.b),
     copy(orig_cell.d),
@@ -69,14 +68,23 @@ end
 ############################
 
 # Seed a cell with nmut mutations, birth and death rates b and d, respectively.
+# Assign the cell with a vector of 0s for each potential mutation position  up
+# until mutmax. 1:nmut is populated with 1s. The position in the vector
+# corresponds to the mutation identity. NB that in the grow function, if the
+# number of unique mutations observed exceeds mutmax, the simulation will end
+# and throw an error.
 
-function seed_cell(nmut::Int64, b::Float64, d::Float64)
+function seed_cell(nmut::Int64, mutmax::Int64, b::Float64, d::Float64)
 
     # Assign all the fields to the CancerCell accordingly.
 
-    init_muts = collect(1.0:nmut)
+    mutmax > nmut || error("mutmax must be > nmut.")
 
-    init_cell = CancerCell(1, init_muts, b, d, 0, 0)
+    init_muts = repeat([0], mutmax)
+
+    init_cell = CancerCell(init_muts, b, d, 0, 0)
+
+    init_cell.muts[1:nmut] .= 1
 
     return init_cell
 
@@ -96,7 +104,7 @@ function grow_cell(init_cell::CancerCell, tmax::Float64,
 
     out_cells = [deepcopy(init_cell)]
 
-    0 <= mu <= 1.0 || error("mu must be between 0 and 1.")
+    0 <= mu || error("mu must be greater than 0.")
     0 <= t_frac <= 1.0 || error("t_frac must be between 0 and 1.")
 
     bmax = maximum(map(x -> x.b, out_cells))
@@ -125,7 +133,7 @@ function grow_cell(init_cell::CancerCell, tmax::Float64,
     # Have a vector to save the number of live cells every t_rec.
     Nvec = Int64[Nt]
     # Also have a vector to save the number of unique mutations (Numuts).
-    Numuts = Int64(maximum(init_cell.muts))
+    Numuts = sum(init_cell.muts)
     mutvec = Int64[Numuts]
 
     # Opposed to sampling directly from out_cells, have a 'samp_vec'. Update
@@ -200,21 +208,23 @@ function grow_cell(init_cell::CancerCell, tmax::Float64,
             out_cells[ran_cell_pos].Ndiv += 1
             ran_cell = copycell(out_cells[ran_cell_pos])
 
-            ran_p = rand()
-
             # Cells gain a mutation with rate mu.
             # NB Here, both daughter cells inherit the mutation.
             # 'Grey -> Black + Black'
 
-            if mu > ran_p
+            # Draw number of mutations from a Poisson distribution.
+            n_mut = rand(Poisson(mu))
+
+            if n_mut > 0
+                # Numuts before these new mutations...
+                orig_Numuts = Numuts
                 # Increase the number of unique mutations in the simulation.
-                Numuts += 1
-                # Add this new mutation to both daughter cells
-                push!(ran_cell.muts, Float64(Numuts))
-                push!(out_cells[ran_cell_pos].muts, Float64(Numuts))
-                # New mutation = new 'sub-clone'
-                ran_cell.cell_ID += 1
-                out_cells[ran_cell_pos].cell_ID += 1
+                Numuts += n_mut
+                # New value must be < mutmax
+                Numuts < length(ran_cell.muts) || error("The number of unique mutations has exceeded the length of 'mutmax' - increase this value for init_cell.")
+                # Add these mutations to the mother and daughter cells.
+                ran_cell.muts[(orig_Numuts+1):(Numuts+1)] .= 1
+                out_cells[ran_cell_pos].muts[(orig_Numuts+1):(Numuts+1)] .= 1
             end
 
             # Now add the daughter cell to the vector of cells.
@@ -265,7 +275,7 @@ end
 ############################
 
 function sim_VAF(cell_vec::Array{CancerCell}; ploidy=2::Int64,
-    cellularity=1.0::Float64, detec_lim=0.05::Float64, depth=100::Int64)
+    cellularity=1.0::Float64, detec_lim=0.10::Float64, depth=100::Int64)
 
     # Total number of cells:
     Nt = length(cell_vec)
@@ -278,7 +288,7 @@ function sim_VAF(cell_vec::Array{CancerCell}; ploidy=2::Int64,
     # Adjust for cellularity
     all_freq = all_freq.*cellularity
     # Set those < detection limit to 0.0
-    #all_freq[all_freq .< detec_lim] .= 0.0
+    all_freq[all_freq .< detec_lim] .= 0.0
     # Sample depths per allele using a binomial where = Nt and p = depth/Nt
     all_dep = rand(Binomial(Nt, depth/Nt), length(all_freq))
 
