@@ -45,8 +45,14 @@ function extract_mut_freqs(cell_vec::Array{CancerCell})
     all_muts = hcat(map(x -> x.muts, cell_vec)...)
     # Convert into freq vector
     mf_vec = sum(all_muts, dims = 2)
-    # Only keep the positive values - others are extinct mutations.
-    mf_vec = mf_vec[mf_vec .> 0]
+    # Work backwards, and only discard all of the 0s until the first positive
+    # value - these were redundant positions assigned to the mutation array.
+    mf_rev = reverse(mf_vec, dims = 1)[:,1]
+    pos_rev_vals = findall(x -> x > 0, mf_rev)
+    # First value is the reverse index of the first positive value
+    last_pos_val = length(mf_vec) - (pos_rev_vals[1] - 1)
+    # Only keep the mutations up until this last positive value.
+    mf_vec = mf_vec[1:last_pos_val]
     # Convert into a freq dataframe
     mut_df = DataFrame(mut_ID = collect(1:length(mf_vec)),
                        mut_count = mf_vec,

@@ -268,8 +268,6 @@ function grow_cell(init_cell::CancerCell, tmax::Float64,
 end
 
 
-
-
 ############################
 # Simulate VAF Function.
 ############################
@@ -302,5 +300,57 @@ function sim_VAF(cell_vec::Array{CancerCell}; ploidy=2::Int64,
     VAF_df[!, :VAF] = VAF
 
     return VAF_df
+
+end
+
+
+
+############################
+# Selective Killing Function
+############################
+
+# Choose a 'resistant mutation' frequency, r, and find a mutation with this
+# given frequency (+/- some tolerance parameter). Then either:
+#   - genetic bottleneck...
+#  i) kill all cells without this mutation (killing Nt*(1 - r) cells)
+#   - non-genetic bottleneck...
+# ii) kill all cells with probability (1 - r)
+# Can then compare the VAF spectrum given these two selective killing scenarios.
+
+function selectively_kill(cell_vec::Array{CancerCell}, r::Float64,
+    tol_dis::Float64; ploidy=2::Int64, cellularity=1.0::Float64,
+    detec_lim=0.10::Float64, depth=100::Int64, gen_bottle=true::Bool)
+
+    0.0 <= r <= 1.0 || error("r must be between 0.0 and 1.0")
+
+    if gen_bottle == true
+        # Genetic bottleneck killing:
+        # Calculate the VAF table to find the frequnecy of each mutation.
+        VAF_df = sim_VAF(cell_vec, ploidy=ploidy, cellularity=cellularity,
+            detec_lim=detec_lim, depth=depth)
+        # Extract mutation relative frequencies
+        mut_rf = VAF_df[!,:mut_rf]
+        # Look for mutation locations with frequency r +/- detec lim
+        chosen_muts = abs.(mut_rf .- r) .< tol_dis
+        # Throw error if there weren't any
+        sum(chosen_muts) > 0 || error("There were no mutations with frequency 'r +/- tol_dis'. Try a less stringent tolerance.")
+        # Retrieve locations of chosen mutations.
+        chosen_mut_locs = findall(x -> x.==1, chosen_muts)
+        # Randomly choose one.
+        ran_mut = sample(chosen_mut_locs)
+        # Only keep cells with a mutation with this position. NB that mutation
+        # and identity = position in the cell vector.
+        new_cell_vec = cell_vec[map(x -> x.muts[ran_mut] .== 1, cell_vec)]
+        # These are the surviving cells.
+
+    else
+        # Non-genetic bottleneck killing:
+        # Randomly select r cells to keep (/1-r cells are 'killed')
+        surv_n = Int64(ceil(length(cell_vec)*r))
+        new_cell_vec = cell_vec[sample(1:length(cell_vec), surv_n)]
+
+    end
+
+    return new_cell_vec
 
 end
