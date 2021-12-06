@@ -86,7 +86,7 @@ function seed_cell(nmut::Int64, mutmax::Int64, b::Float64, d::Float64)
 
     init_cell.muts[1:nmut] .= 1
 
-    return init_cell
+    return [init_cell]
 
 end
 
@@ -99,10 +99,10 @@ end
 # or N = Nmax. Allow mutations to accrue at a rate mu per-division. Record
 # the total number of i) cells and ii) mutations every (tmax/t_frac).
 
-function grow_cell(init_cell::CancerCell, tmax::Float64,
+function grow_cells(init_cells::Array{CancerCell}, tmax::Float64,
     Nmax::Int64, mu::Float64; t_frac=0.050::Float64)
 
-    out_cells = [deepcopy(init_cell)]
+    out_cells = deepcopy(init_cells)
 
     0 <= mu || error("mu must be greater than 0.")
     0 <= t_frac <= 1.0 || error("t_frac must be between 0 and 1.")
@@ -133,7 +133,12 @@ function grow_cell(init_cell::CancerCell, tmax::Float64,
     # Have a vector to save the number of live cells every t_rec.
     Nvec = Int64[Nt]
     # Also have a vector to save the number of unique mutations (Numuts).
-    Numuts = sum(init_cell.muts)
+    if length(init_cells) == 1
+        Numuts = sum(map(x -> x.muts, init_cells)[1])
+    else
+        Numuts = sum(sum(hcat(map(x -> x.muts, init_cells)...), dims = 2) .> 0)
+    end
+
     mutvec = Int64[Numuts]
 
     # Opposed to sampling directly from out_cells, have a 'samp_vec'. Update
@@ -318,8 +323,7 @@ end
 # Can then compare the VAF spectrum given these two selective killing scenarios.
 
 function selectively_kill(cell_vec::Array{CancerCell}, r::Float64,
-    tol_dis::Float64; ploidy=2::Int64, cellularity=1.0::Float64,
-    detec_lim=0.10::Float64, depth=100::Int64, gen_bottle=true::Bool)
+    tol_dis::Float64; gen_bottle=true::Bool)
 
     0.0 <= r <= 1.0 || error("r must be between 0.0 and 1.0")
 
@@ -352,5 +356,76 @@ function selectively_kill(cell_vec::Array{CancerCell}, r::Float64,
     end
 
     return new_cell_vec
+
+end
+
+
+#############################
+# Grow-Kill-Grow-VAF Function
+#############################
+
+# Grow cells, selectively kill, grow again, then create the VAF dataframe.
+# The aim is to simulate something akin to: an initial expansion stage
+# following transformation, a selective bottleneck - for example
+# drug-treatment, and then a subsequent expansion stage (where mutations
+# continue to accumulate). Finally, the VAF distribution is returned.
+# Always repeat the selective killing step for both a genetic and non-genetic
+# bottleneck.
+
+function grow_kill_grow_VAF(nmut::Int64, mutmax::Int64, b::Float64, d::Float64,
+    tmax_1::Float64, tmax_2::Float64, Nmax_1::Int64, Nmax_2::Int64, mu::Float64,
+    r::Float64, tol_dis::Float64; ploidy=2::Int64, cellularity=1.0::Float64,
+    detec_lim=0.10::Float64, depth=100::Int64)
+
+    # First cell:
+    init_cell = seed_cell(nmut, mutmax, b, d)
+
+    # Grow for first interval - repeat if lost to extinction.
+    out_1 = grow_cells(init_cell, tmax_1, Nmax_1, mu)
+
+    while length(out_1.cells) == 0
+        out_1 = grow_cells(init_cell, tmax_1, Nmax_1, mu)
+    end
+
+    # Selectively kill:
+    # Genetic bottleneck -
+    sel_kill_out_a = selectively_kill(out_1.cells, r, tol_dis, gen_bottle=true)
+    # Non-genetic bottleneck -
+    sel_kill_out_b = selectively_kill(out_1.cells, r, tol_dis, gen_bottle=false)
+
+    # Repeat the growth period - again, repeat if lost to extinction.
+    # Do this for both genetic and non-genetic bottlenecks.
+
+    out_2a = grow_cells(sel_kill_out_a, tmax_2, Nmax_2, mu)
+
+    while length(out_2.cells) == 0
+        out_2a = grow_cells(sel_kill_out_a, tmax_2, Nmax_2, mu)
+    end
+
+    out_2b = grow_cells(sel_kill_out_b, tmax_2, Nmax_2, mu)
+
+    while length(out_2.cells) == 0
+        out_2b = grow_cells(init_cells, tmax_2, Nmax_2, mu)
+    end
+
+    # Turn these final outputs into VAF dataframes.
+
+    VAF_df_a = sim_VAF(out_2a.cells, ploidy=ploidy, cellularity=cellularity,
+    detec_lim=detec_lim, depth=depth)
+
+    VAF_df_b = sim_VAF(out_2b.cells, ploidy=ploidy, cellularity=cellularity,
+    detec_lim=detec_lim, depth=depth)
+
+    # Merge the VAF dataframes:
+    VAF_df = outerjoin(VAF_df_a, VAF_df_b, on = :mut_ID, makeunique=true)
+    # Replace NAs
+    VAF_df = rep_missings(VAF_df)
+    # Rename columns
+    colnames = [:mut_ID, :mut_count_gb, :mut_rf_gb, :VAF_gb,
+                         :mut_count_ngb, :mut_rf_ngb, :VAF_ngb]
+    rename!(VAF_df, colnames)
+
+    # Return final dataframe
+    return VAF_df
 
 end

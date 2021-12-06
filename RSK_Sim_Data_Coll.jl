@@ -46,7 +46,8 @@ function extract_mut_freqs(cell_vec::Array{CancerCell})
     # Convert into freq vector
     mf_vec = sum(all_muts, dims = 2)
     # Work backwards, and only discard all of the 0s until the first positive
-    # value - these were redundant positions assigned to the mutation array.
+    # value - these were empty positions assigned to the mutation array that
+    # haven't been filled. 
     mf_rev = reverse(mf_vec, dims = 1)[:,1]
     pos_rev_vals = findall(x -> x > 0, mf_rev)
     # First value is the reverse index of the first positive value
