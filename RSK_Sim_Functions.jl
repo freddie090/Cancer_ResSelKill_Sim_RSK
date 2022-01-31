@@ -74,17 +74,11 @@ end
 # number of unique mutations observed exceeds mutmax, the simulation will end
 # and throw an error.
 
-function seed_cell(nmut::Int64, mutmax::Int64, b::Float64, d::Float64)
+function seed_cell(nmut::Int64, b::Float64, d::Float64)
 
     # Assign all the fields to the CancerCell accordingly.
 
-    mutmax > nmut || error("mutmax must be > nmut.")
-
-    init_muts = repeat([0], mutmax)
-
-    init_cell = CancerCell(init_muts, b, d, 0, 0)
-
-    init_cell.muts[1:nmut] .= 1
+    init_cell = CancerCell(collect(1:nmut), b, d, 0, 0)
 
     return [init_cell]
 
@@ -133,13 +127,16 @@ function grow_cells(init_cells::Array{CancerCell}, tmax::Float64,
     # Have a vector to save the number of live cells every t_rec.
     Nvec = Int64[Nt]
     # Also have a vector to save the number of unique mutations (Numuts).
-    if length(init_cells) == 1
-        Numuts = sum(map(x -> x.muts, init_cells)[1])
+    Numut = length(unique(vcat(map(x -> x.muts, out_cells)...)))
+    # And the most recent unique mutation identifier (not the same as unique
+    # mutations, as some mutant lineages could be lost to drift).
+    if Numut == 0
+        MRmut = 0
     else
-        Numuts = sum(sum(hcat(map(x -> x.muts, init_cells)...), dims = 2) .> 0)
+        MRmut = maximum(unique(vcat(map(x -> x.muts, out_cells)...)))
     end
 
-    mutvec = Int64[Numuts]
+    Numutvec = Int64[Numut]
 
     # Opposed to sampling directly from out_cells, have a 'samp_vec'. Update
     # this following a birth or death accordingly:
@@ -179,7 +176,7 @@ function grow_cells(init_cells::Array{CancerCell}, tmax::Float64,
         if t >= t_rec
             push!(Nvec, Nt)
             push!(tvec, t)
-            push!(mutvec, Numuts)
+            push!(Numutvec, Numut)
             t_rec += t_rec_change
         end
 
@@ -195,7 +192,7 @@ function grow_cells(init_cells::Array{CancerCell}, tmax::Float64,
         if Nt >= Nmax
             push!(Nvec, Nt)
             push!(tvec, t)
-            push!(mutvec, Numuts)
+            push!(Numutvec, Numut)
             break
         end
 
@@ -221,15 +218,16 @@ function grow_cells(init_cells::Array{CancerCell}, tmax::Float64,
             n_mut = rand(Poisson(mu))
 
             if n_mut > 0
-                # Numuts before these new mutations...
-                orig_Numuts = Numuts
-                # Increase the number of unique mutations in the simulation.
-                Numuts += n_mut
-                # New value must be < mutmax
-                Numuts < length(ran_cell.muts) || error("The number of unique mutations has exceeded the length of 'mutmax' - increase this value for init_cell.")
+                # Vector of new mutations
+                n_mut_vec = collect((MRmut+1):(MRmut+n_mut+1))
                 # Add these mutations to the mother and daughter cells.
-                ran_cell.muts[(orig_Numuts+1):(Numuts+1)] .= 1
-                out_cells[ran_cell_pos].muts[(orig_Numuts+1):(Numuts+1)] .= 1
+                append!(ran_cell.muts, n_mut_vec)
+                append!(out_cells[ran_cell_pos].muts, n_mut_vec)
+                # Increase the number of unique mutations and the most recent
+                # unique mutation identifier in the simulation.
+                Numut += (n_mut+1)
+                MRmut += (n_mut+1)
+
             end
 
             # Now add the daughter cell to the vector of cells.
@@ -257,7 +255,7 @@ function grow_cells(init_cells::Array{CancerCell}, tmax::Float64,
         if length(kill_vec) >= length(samp_vec)
             push!(Nvec, Nt)
             push!(tvec, t)
-            push!(mutvec, Numuts)
+            push!(Numutvec, Numut)
             break
         end
 
@@ -268,7 +266,7 @@ function grow_cells(init_cells::Array{CancerCell}, tmax::Float64,
 
     fin_t = round(t, digits = 4)
 
-    return Grow_Out(out_cells, Nvec, tvec, mutvec, fin_t)
+    return Grow_Out(out_cells, Nvec, tvec, Numutvec, fin_t)
 
 end
 
@@ -277,34 +275,29 @@ end
 # Simulate VAF Function.
 ############################
 
-function sim_VAF(cell_vec::Array{CancerCell}; ploidy=2::Int64,
+function sim_VAF(mut_df::DataFrame, mut_rf_col::String; ploidy=2::Int64,
     cellularity=1.0::Float64, detec_lim=0.10::Float64, depth=100::Int64)
 
-    # Total number of cells:
-    Nt = length(cell_vec)
-    # Now get the mutation dataframe.
-    mut_df = extract_mut_freqs(cell_vec)
-    # Extract the allele frequencies
-    all_freq = mut_df[!, :mut_rf]
-    # Adjust for ploidy
-    all_freq = all_freq./ploidy
-    # Adjust for cellularity
-    all_freq = all_freq.*cellularity
-    # Set those < detection limit to 0.0
-    all_freq[all_freq .< detec_lim] .= 0.0
-    # Sample depths per allele using a binomial where = Nt and p = depth/Nt
-    all_dep = rand(Binomial(Nt, depth/Nt), length(all_freq))
+    0 <= cellularity <= 1.0 || error("cellularity must be between 0.0 and 1.0.")
+    0 <= detec_lim <= 1.0 || error("detec_lim must be between 0.0 and 1.0.")
 
-    # Now sample alleles where n = sampled all_dep, and p = all_freq.
-    samp_all = map((n, p) -> rand(Binomial(n, p)), all_dep, all_freq)
+    # Extract the chosen mutation relative frequencies.
+    mut_rfs = mut_df[! , Symbol(mut_rf_col)]
+    # Adjust for ploidy
+    mut_rfs = mut_rfs./ploidy
+    # Adjust for cellularity
+    mut_rfs = mut_rfs.*cellularity
+    # Set those < detection limit to 0.0
+    mut_rfs[mut_rfs .< detec_lim] .= 0.0
+    # Sample depths per allele using a binomial where rate = depth.
+    all_dep = rand(Poisson(depth), length(mut_rfs))
+    # Now sample alleles where n = sampled all_dep, and p = mut_rfs.
+    samp_all = map((n, p) -> rand(Binomial(n, p)), all_dep, mut_rfs)
     # And depth is these counts normalsed by the total depth.
     VAF = samp_all ./ all_dep
+    # Return the vector of simulated VAFs
 
-    # Return these as part of the dataframe.
-    VAF_df = mut_df
-    VAF_df[!, :VAF] = VAF
-
-    return VAF_df
+    return VAF
 
 end
 
@@ -329,11 +322,10 @@ function selectively_kill(cell_vec::Array{CancerCell}, r::Float64,
 
     if gen_bottle == true
         # Genetic bottleneck killing:
-        # Calculate the VAF table to find the frequnecy of each mutation.
-        VAF_df = sim_VAF(cell_vec, ploidy=ploidy, cellularity=cellularity,
-            detec_lim=detec_lim, depth=depth)
+        # Calculate the mutation frequency table.
+        mut_df = extract_mut_freqs(cell_vec)
         # Extract mutation relative frequencies
-        mut_rf = VAF_df[!,:mut_rf]
+        mut_rf = mut_df[!,:mut_rf]
         # Look for mutation locations with frequency r +/- detec lim
         chosen_muts = abs.(mut_rf .- r) .< tol_dis
         # Throw error if there weren't any
@@ -341,12 +333,12 @@ function selectively_kill(cell_vec::Array{CancerCell}, r::Float64,
         # Retrieve locations of chosen mutations.
         chosen_mut_locs = findall(x -> x.==1, chosen_muts)
         # Randomly choose one.
-        ran_mut = sample(chosen_mut_locs)
-        # Only keep cells with a mutation with this position. NB that mutation
-        # and identity = position in the cell vector.
-        new_cell_vec = cell_vec[map(x -> x.muts[ran_mut] .== 1, cell_vec)]
-        # These are the surviving cells.
-
+        ran_mut_row = sample(chosen_mut_locs)
+        # Therefore exract the mut_ID from the VAF dataframe
+        ran_mut = mut_df[ran_mut_row, :mut_ID]
+        # Get the positions in the cell vector of all that have this mutation.
+        cell_mut_locs = findall(x -> sum(x.muts .== ran_mut).==1, cell_vec)
+        new_cell_vec = cell_vec[cell_mut_locs]
     else
         # Non-genetic bottleneck killing:
         # Randomly select r cells to keep (/1-r cells are 'killed')
@@ -361,24 +353,29 @@ end
 
 
 #############################
-# Grow-Kill-Grow-VAF Function
+# Grow-Kill-Grow Function
 #############################
 
-# Grow cells, selectively kill, grow again, then create the VAF dataframe.
+# Grow cells, selectively kill, grow again, then create the mutation frequency
+#  dataframe.
 # The aim is to simulate something akin to: an initial expansion stage
 # following transformation, a selective bottleneck - for example
 # drug-treatment, and then a subsequent expansion stage (where mutations
-# continue to accumulate). Finally, the VAF distribution is returned.
+# continue to accumulate). Finally, the mutation frequency distribution
+# is returned.
 # Always repeat the selective killing step for both a genetic and non-genetic
-# bottleneck.
+# bottleneckon the same counts.
 
-function grow_kill_grow_VAF(nmut::Int64, mutmax::Int64, b::Float64, d::Float64,
+# To aid in comparisons, allow multiple values of r to be run on the
+# same original cell output... this way can exclude differences due to
+# stochasticity in the simulations when making comparisons.
+
+function grow_kill_grow(nmut::Int64, b::Float64, d::Float64,
     tmax_1::Float64, tmax_2::Float64, Nmax_1::Int64, Nmax_2::Int64, mu::Float64,
-    r::Float64, tol_dis::Float64; ploidy=2::Int64, cellularity=1.0::Float64,
-    detec_lim=0.10::Float64, depth=100::Int64)
+    rs::Array{Float64, 1}, tol_diss::Array{Float64, 1})
 
     # First cell:
-    init_cell = seed_cell(nmut, mutmax, b, d)
+    init_cell = seed_cell(nmut, b, d)
 
     # Grow for first interval - repeat if lost to extinction.
     out_1 = grow_cells(init_cell, tmax_1, Nmax_1, mu)
@@ -387,45 +384,72 @@ function grow_kill_grow_VAF(nmut::Int64, mutmax::Int64, b::Float64, d::Float64,
         out_1 = grow_cells(init_cell, tmax_1, Nmax_1, mu)
     end
 
-    # Selectively kill:
-    # Genetic bottleneck -
-    sel_kill_out_a = selectively_kill(out_1.cells, r, tol_dis, gen_bottle=true)
-    # Non-genetic bottleneck -
-    sel_kill_out_b = selectively_kill(out_1.cells, r, tol_dis, gen_bottle=false)
+    # Repeat the following for each value of depth and r, saving the original
+    # mutation frequency distribution and selective killing mutation frequency distribution
+    # dataframes each time.
+    mf_dfs = Array{DataFrame}(undef, 0)
 
-    # Repeat the growth period - again, repeat if lost to extinction.
-    # Do this for both genetic and non-genetic bottlenecks.
+    # Check length of rs = length of tol_diss
+    length(rs) == length(tol_diss) || error("The vectors 'rs' and 'tol_diss' should be the same length.")
 
-    out_2a = grow_cells(sel_kill_out_a, tmax_2, Nmax_2, mu)
+    for i in 1:length(rs)
 
-    while length(out_2.cells) == 0
+        # Save this as an original mut_freq_df.
+        orig_mf_df = extract_mut_freqs(out_1.cells)
+
+        # Selectively kill:
+        # Genetic bottleneck -
+        sel_kill_out_a = selectively_kill(out_1.cells, rs[i], tol_diss[i], gen_bottle=true)
+        # Non-genetic bottleneck -
+        sel_kill_out_b = selectively_kill(out_1.cells, rs[i], tol_diss[i], gen_bottle=false)
+
+        # Repeat the growth period - again, repeat if lost to extinction.
+        # Do this for both genetic and non-genetic bottlenecks.
+
         out_2a = grow_cells(sel_kill_out_a, tmax_2, Nmax_2, mu)
+
+        while length(out_2a.cells) == 0
+            out_2a = grow_cells(sel_kill_out_a, tmax_2, Nmax_2, mu)
+        end
+
+        out_2b = grow_cells(sel_kill_out_b, tmax_2, Nmax_2, mu)
+
+        while length(out_2b.cells) == 0
+            out_2b = grow_cells(init_cells, tmax_2, Nmax_2, mu)
+        end
+
+        # Turn these final outputs into mutation frequency dataframes.
+
+        mf_df_a = extract_mut_freqs(out_2a.cells)
+
+        mf_df_b = extract_mut_freqs(out_2b.cells)
+
+        # Merge all three mutation frequency dataframes:
+        mf_df = outerjoin(orig_mf_df, mf_df_a, on = :mut_ID, makeunique=true)
+        mf_df = outerjoin(mf_df, mf_df_b, on = :mut_ID, makeunique=true)
+        # Replace NAs
+        mf_df = rep_missings(mf_df)
+
+        # Rename columns
+        colnames = [:mut_ID, :mut_count_pre, :mut_rf_pre,
+                             :mut_count_gb, :mut_rf_gb,
+                             :mut_count_ngb, :mut_rf_ngb]
+        rename!(mf_df, colnames)
+
+        # Add column saving this simulations given r, and then save to
+        # the output arrays.
+
+        mf_df[!, :r] = repeat([rs[i]], nrow(mf_df))
+        mf_df[!, :tol_dis] = repeat([tol_diss[i]], nrow(mf_df))
+
+        push!(mf_dfs, mf_df)
+
     end
 
-    out_2b = grow_cells(sel_kill_out_b, tmax_2, Nmax_2, mu)
+    # Merge for each r and depth
+    mf_df = vcat(mf_dfs...)
 
-    while length(out_2.cells) == 0
-        out_2b = grow_cells(init_cells, tmax_2, Nmax_2, mu)
-    end
-
-    # Turn these final outputs into VAF dataframes.
-
-    VAF_df_a = sim_VAF(out_2a.cells, ploidy=ploidy, cellularity=cellularity,
-    detec_lim=detec_lim, depth=depth)
-
-    VAF_df_b = sim_VAF(out_2b.cells, ploidy=ploidy, cellularity=cellularity,
-    detec_lim=detec_lim, depth=depth)
-
-    # Merge the VAF dataframes:
-    VAF_df = outerjoin(VAF_df_a, VAF_df_b, on = :mut_ID, makeunique=true)
-    # Replace NAs
-    VAF_df = rep_missings(VAF_df)
-    # Rename columns
-    colnames = [:mut_ID, :mut_count_gb, :mut_rf_gb, :VAF_gb,
-                         :mut_count_ngb, :mut_rf_ngb, :VAF_ngb]
-    rename!(VAF_df, colnames)
-
-    # Return final dataframe
-    return VAF_df
+    # Return final dataframes
+    return mf_df
 
 end

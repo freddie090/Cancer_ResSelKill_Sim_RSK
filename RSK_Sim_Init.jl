@@ -15,7 +15,7 @@ using CSV
 using Base.Threads
 
 include("RSK_Sim_Structs.jl")
-include("RSK_Sim_Functions.jl")
 include("RSK_Sim_Data_Coll.jl")
+include("RSK_Sim_Functions.jl")
 include("RSK_Sim_Experiments.jl")
 #include("RSK_Sim_Plotting.jl")

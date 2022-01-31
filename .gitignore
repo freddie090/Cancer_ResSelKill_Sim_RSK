@@ -1,0 +1,13 @@
+# Ignore output directories
+Outputs/
+
+# Ignore old script files don't want to delete
+OLD/
+
+# Ignore RSK sim exploration script
+RSK_exploration.R
+
+# Ignore Rhistory
+.Rhistory
+
+# Any other ignore files:

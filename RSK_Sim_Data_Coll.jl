@@ -41,23 +41,15 @@ end
 
 function extract_mut_freqs(cell_vec::Array{CancerCell})
 
-    # Extract all mutations - rows = mutation ID, cols = freq.
-    all_muts = hcat(map(x -> x.muts, cell_vec)...)
-    # Convert into freq vector
-    mf_vec = sum(all_muts, dims = 2)
-    # Work backwards, and only discard all of the 0s until the first positive
-    # value - these were empty positions assigned to the mutation array that
-    # haven't been filled. 
-    mf_rev = reverse(mf_vec, dims = 1)[:,1]
-    pos_rev_vals = findall(x -> x > 0, mf_rev)
-    # First value is the reverse index of the first positive value
-    last_pos_val = length(mf_vec) - (pos_rev_vals[1] - 1)
-    # Only keep the mutations up until this last positive value.
-    mf_vec = mf_vec[1:last_pos_val]
-    # Convert into a freq dataframe
-    mut_df = DataFrame(mut_ID = collect(1:length(mf_vec)),
-                       mut_count = mf_vec,
-                       mut_rf = mf_vec/length(cell_vec))
+    # Extract all mutations.
+    all_muts = vcat(map(x -> x.muts, cell_vec)...)
+    # Convert to count dataframe
+    mut_df = DataFrame(mut = all_muts)
+    mut_df = combine(groupby(mut_df, :mut), nrow)
+    colnames = [:mut_ID, :mut_count]
+    rename!(mut_df, colnames)
+    # Add a relative frequency column
+    mut_df[!, :mut_rf] = mut_df[!, :mut_count]./length(cell_vec)
 
     return mut_df
 
